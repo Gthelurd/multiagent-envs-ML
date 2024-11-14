@@ -35,6 +35,8 @@ class MultiAgentEnv(gym.Env):
         self.shared_reward = world.collaborative if hasattr(world, 'collaborative') else False
         self.time = 0
         self.count = 0
+        
+        
 
         # configure spaces
         self.action_space = []
@@ -89,6 +91,7 @@ class MultiAgentEnv(gym.Env):
     ### gai
     def step(self, action_n, target=None):
     # def step(self, action_n):
+        action_n = np.array((np.zeros(5), action_n))
         obs_n = []
         reward_n = []
         done_n = []
@@ -116,9 +119,15 @@ class MultiAgentEnv(gym.Env):
         action_n[0][1] = d_t[0]
         action_n[0][3] = d_t[1]
         action_n[0][0], action_n[0][2], action_n[0][4] = 0, 0, 0
+        
         # pursuer action
         self._set_action(action_n[0], self.agents[0], self.action_space[0]) 
         # evader action
+        # self._set_action(action_n[1], self.agents[1], self.action_space[1]) 
+        escape_direction = self.calculate_escape_direction(self.agents[1], self.world)
+        action_n[1][1] = escape_direction[0]
+        action_n[1][3] = escape_direction[1]
+        action_n[1][0], action_n[1][2], action_n[1][4] = 0, 0, 0
         self._set_action(action_n[1], self.agents[1], self.action_space[1]) 
         
         # # all agents get total reward in cooperative case
@@ -128,6 +137,7 @@ class MultiAgentEnv(gym.Env):
 
         return obs_n, reward_n, done_n, info_n
 
+    # should be used without obstacles , origin from source code 
     def reset(self):
         # reset world
         self.reset_callback(self.world)
@@ -139,6 +149,19 @@ class MultiAgentEnv(gym.Env):
         for agent in self.agents:
             obs_n.append(self._get_obs(agent))
         return obs_n
+    
+    # just updated from _reset , add the obstacles
+    def reset(self, agent_pos = None, check_pos = None, obstacles=None):
+        # reset world
+        self.reset_callback(self.world, agent_pos, check_pos, obstacles)
+        # reset renderer
+        self._reset_render()
+        # record observations for each agent
+        obs_n = []
+        self.agents = self.world.policy_agents
+        for agent in self.agents:
+            obs_n.append(self._get_obs(agent))
+        return obs_n    
 
     # get info used for benchmarking
     def _get_info(self, agent):
@@ -166,6 +189,101 @@ class MultiAgentEnv(gym.Env):
             return 0.0
         return self.reward_callback(agent, self.world)
 
+
+    def get_nearest_adv(self,agent,world):
+        nearest_adv = None
+        min_dist = 100000
+        for a in agent:
+            if not a.adverary:
+                good_agent = a
+        for a in agent:
+            if a.adverary:
+                dist = np.linalg.norm(good_agent.state.p_pos - a.state.p_pos)
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_adv = a
+        return nearest_adv
+    
+    def get_nearest_obstacle(self, agent, world):
+        nearest_obstacle = None
+        min_dist = 100000
+        for i, landmark in enumerate(world.landmarks):
+            dist = np.linalg.norm(agent.state.p_pos - landmark.state.p_pos)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_obstacle = landmark
+        return nearest_obstacle
+    
+    def get_check_point(self,agent,world):
+        for check in self.checkpoints(world):
+            dist = np.linalg.norm(agent.state.p_pos - check.state.p_pos)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_check = check
+        return nearest_check
+    
+    def calculate_escape_direction(self, agent, world):
+        # 获取最近的敌对智能体
+        nearest_adv = world.agents[0]
+        escape_direction = agent.state.p_pos - nearest_adv.state.p_pos
+        distance_to_adv = np.linalg.norm(escape_direction)
+        escape_direction /= distance_to_adv
+        # 预测捕食者的下一个位置
+        # 预测捕食者的移动方向
+        adv_velocity = nearest_adv.state.p_vel
+        adv_direction = adv_velocity / np.linalg.norm(adv_velocity)
+        
+        # 获取目标点
+        goal = world.check[0]
+        goal_direction = goal.state.p_pos - agent.state.p_pos
+        goal_direction /= np.linalg.norm(goal_direction)
+    
+        # 获取最近的障碍物
+        nearest_obs = self.get_nearest_obstacle(agent, world)
+        obs_direction = agent.state.p_pos - nearest_obs.state.p_pos
+        obs_distance = np.linalg.norm(agent.state.p_pos - nearest_obs.state.p_pos)
+        obs_direction /= obs_distance
+    
+        # 设置阈值
+        threshold = 0.28
+    
+        # 计算最终方向
+        if distance_to_adv < threshold:
+            # 在远离敌对智能体的同时，朝着目标位置移动
+            escape_weight = 0.9 - 0.8 * (distance_to_adv / threshold)
+            goal_weight = 1.0 - escape_weight
+            final_direction = escape_weight * escape_direction + goal_weight * goal_direction
+        else:
+            final_direction = 0.8 * goal_direction
+
+
+        # 增加对障碍物的避让策略
+        if obs_distance < 0.16:  # 如果距离障碍物很近，增加避让权重
+            final_direction = +0.8 * obs_direction - 0.2 * goal_direction
+            
+         # 引入随机扰动
+        if distance_to_adv > threshold and distance_to_adv < threshold+0.2:  # 在threshold附近引入随机扰动
+            perturbation = np.random.normal(0, 0.5, 2)
+            final_direction += perturbation
+        final_direction /= np.linalg.norm(final_direction)
+        
+        # 考虑捕食者的移动方向
+        # if np.dot(final_direction, adv_direction) > 0:  # 如果最终方向与捕食者的移动方向一致
+        #     final_direction -= 0.5 * adv_direction  # 调整方向以避免直接迎头相撞
+        return final_direction
+ 
+    def _set_direction(self, agent, direction):
+        # Normalize the direction vector
+        direction /= np.linalg.norm(direction)
+        # Set the agent's action based on the direction
+        agent.action.u = direction
+        # Apply sensitivity (acceleration)
+        sensitivity = 50.0
+        if agent.accel is not None:
+            sensitivity = agent.accel
+        agent.action.u *= sensitivity
+        
+        
     # set env action for a particular agent
     def _set_action(self, action, agent, action_space, time=None):
         agent.action.u = np.zeros(self.world.dim_p)  # core.py line 91 定义 self.dim_p=2 ##agent.action.u为2维数据[0,0]
@@ -189,7 +307,7 @@ class MultiAgentEnv(gym.Env):
                 agent.action.u = np.zeros(self.world.dim_p)
                 # process discrete action  #离散动作空间中 action 为1*5维的向量，action[0][0]为NOOP，即无操作，
                 # 其余包括x轴正负向变化量大小，y轴正负向变化量大小
-                # 在multi_discrite.py文件里面有说明
+                # 在multi_discrite.py文件里面有说明\
                 if action[0] == 1:  agent.action.u[0] = -1.0
                 if action[0] == 2:  agent.action.u[0] = +1.0
                 if action[0] == 3:  agent.action.u[1] = -1.0
@@ -207,7 +325,6 @@ class MultiAgentEnv(gym.Env):
                     agent.action.u = action[0]
                     # print('qqq:', action[0])
                 # print("ccc:", agent.action.u)  # 查看信息
-
             sensitivity = 5.0
             if agent.accel is not None:
                 sensitivity = agent.accel # 加速度

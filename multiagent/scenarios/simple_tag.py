@@ -25,11 +25,15 @@ class Scenario(BaseScenario):
             agent.silent = True
             agent.adversary = True if i < num_adversaries else False
             agent.size = 0.025 if agent.adversary else 0.025
-            agent.accel = 1.1 if agent.adversary else 1.0  # 加速度
-            # agent.accel = 20.0 if agent.adversary else 25.0
-            # agent.max_speed = 1.0 if agent.adversary else 1.3
-            agent.max_speed = 0.25 if agent.adversary else 0.25
-        # add landmarks
+            # agent.accel = 1.1 if agent.adversary else 1.0  # 加速度
+            # # agent.accel = 20.0 if agent.adversary else 25.0
+            # # agent.max_speed = 1.0 if agent.adversary else 1.3
+            # agent.max_speed = 0.28 if agent.adversary else 0.25
+            
+            agent.accel = 1.1 if agent.adversary else 1.5  # 增加智能体的加速度
+            agent.max_speed = 0.28 if agent.adversary else 0.35  # 增加智能体的最大速度
+        
+        # add landmarks , denoted as obstacles
         world.landmarks = [Landmark() for i in range(num_landmarks)]
         for i, landmark in enumerate(world.landmarks):
             landmark.name = 'landmark %d' % i
@@ -37,6 +41,8 @@ class Scenario(BaseScenario):
             landmark.movable = False
             landmark.size = 0.05
             landmark.boundary = False
+            
+        # add Target point , named check
         world.check = [Check() for i in range(num_check)]
         for i, check in enumerate(world.check):
             check.name = 'checkpoint %d' % i
@@ -62,8 +68,9 @@ class Scenario(BaseScenario):
         # make initial conditions
         self.reset_world(world)
         return world
-
-    def reset_world(self, world):
+    
+    
+    def _reset_world(self, world):
         # random properties for agents
         for i, agent in enumerate(world.agents):  # agent颜色
             agent.color = np.array(
@@ -127,6 +134,83 @@ class Scenario(BaseScenario):
             border.state.p_pos = np.asarray(pos[i])  # 将设好的坐标传到border的位置坐标
             border.state.p_vel = np.zeros(world.dim_p)
 
+    
+    def reset_world(self, world, agent_pos=None, check_pos=None, obstacles=None):
+        # random properties for agents
+        for i, agent in enumerate(world.agents):  # agent颜色
+            agent.color = np.array(
+                [0.35, 0.85, 0.35]) if not agent.adversary else np.array([0.85, 0.35, 0.35])
+        # random properties for landmarks
+        for i, landmark in enumerate(world.landmarks):
+            landmark.color = np.array([0.25, 0.25, 0.25])  # landmark 颜色
+        # # random properties for borders
+        for i, border in enumerate(world.borders):
+            border.color = np.array([0.8, 0.4, 0.4])  # 边界颜色
+        # # set random initial
+        for i, check in enumerate(world.check):
+            check.color = np.array([0.8, 0.6, 0.8])
+        for agent in world.agents:
+            # agent初始位置状态 [x,y]=[0,0]是在视野中心
+            agent.state.p_pos = np.random.uniform(-0.28, -0.05, world.dim_p) if agent.adversary else np.random.uniform(0.05, 0.28, world.dim_p)
+            if agent_pos is None:
+                agent.state.p_pos = np.array(
+                    [0.0, 0.0]) if agent.adversary else np.array([0.5, 0.5])
+            else:
+                agent.state.p_pos = agent_pos[0] if agent.adversary else agent_pos[1] 
+            agent.state.p_vel = np.zeros(world.dim_p)  # agent初始速度
+            agent.state.c = np.zeros(world.dim_c)  # agent初始交流状态
+        
+        if obstacles is None:
+            pos = [[-0.35, 0.35], [0.35, 0.35], [0, -0.35]] # test point
+        else:
+            pos = obstacles
+        
+        for i, landmark in enumerate(world.landmarks):
+            if not landmark.boundary:
+                landmark.state.p_pos = pos[i]  # landmark初始位置
+                landmark.state.p_vel = np.zeros(world.dim_p)
+        world.check[0].state.p_pos = [np.random.uniform(-0.6,0.6),np.random.uniform(-0.6,0.6)]
+        
+        if check_pos is None:
+            world.check[0].state.p_pos = [-0.5, -0.5]
+        else:
+            world.check[0].state.p_pos = check_pos
+        world.check[0].state.p_vel = np.zeros(world.dim_p)
+        # # 增加部分 [x,y]=[0,0]是在视野中心
+        # # 每条边20个border， 计算好大概位置，依次为每条边的border生成位置坐标
+        pos = []
+        x = -0.95
+        y = -1.0
+        # bottom
+        for count in range(20):
+            pos.append([x, y])
+            x += 0.1
+
+        x = 1.0
+        y = -0.95
+        # right
+        for count in range(20):
+            pos.append([x, y])
+            y += 0.1
+
+        x = 0.95
+        y = 1.0
+        # top
+        for count in range(20):
+            pos.append([x, y])
+            x -= 0.1
+
+        x = -1.0
+        y = 0.95
+        # left
+        for count in range(20):
+            pos.append([x, y])
+            y -= 0.1
+
+        for i, border in enumerate(world.borders):
+            border.state.p_pos = np.asarray(pos[i])  # 将设好的坐标传到border的位置坐标
+            border.state.p_vel = np.zeros(world.dim_p)
+    
     def benchmark_data(self, agent, world):
         # returns data for benchmarking purposes
         if agent.adversary:
@@ -165,8 +249,6 @@ class Scenario(BaseScenario):
             good_agent = self.good_agents(world)[0]
             if self.is_collision(good_agent, agent):
                 return True
-
-            
         #landmark
         if not agent.adversary:
             for i, landmark in enumerate(world.landmarks):
@@ -181,6 +263,13 @@ class Scenario(BaseScenario):
             if dist < agent.size + world.check[0].size:
                 return True
 
+    def is_success(self, agent, world):
+        # agent
+        if agent.adversary:
+            good_agent = self.good_agents(world)[0]
+            if self.is_collision(good_agent, agent):
+                return True
+        
     def agent_reward(self, agent, world):
         # Agents are negatively rewarded if caught by adversaries
         rew = 0
@@ -193,15 +282,31 @@ class Scenario(BaseScenario):
         for i, landmark in enumerate(world.landmarks):
             if not landmark.boundary:
                 if self.is_collision(landmark, agent):
-                    rew -= 10
-        for i, border in enumerate(world.borders):
-            if self.is_collision(border, agent):
-                rew -= 10
+                    rew -= 15
+        # for i, border in enumerate(world.borders):
+        #     if self.is_collision(border, agent):
+        #         rew -= 10
 
+        def bound(x):
+            if x < 0.9:
+                return 0
+            if x < 1.0:
+                return (x - 0.9) * 10
+            return min(np.exp(2 * x - 2), 10)
+        for p in range(world.dim_p):
+            x = abs(agent.state.p_pos[p])
+            rew -= bound(x)
+        
         dist = np.sqrt(
             np.sum(np.square(agent.state.p_pos - world.check[0].state.p_pos)))
         # 距离check点越远，惩罚越大
-        rew -= 0.5 * dist
+        rew += 0.05 / dist ** 2
+        dist2=[]
+        # for i, landmark in enumerate(world.landmarks):
+        #     delta_dis = agent.state.p_pos - landmark.state.p_pos 
+        #     dist2.append( np.sqrt(np.sum(np.square(delta_dis))))
+        # if min(dist2) < 0.1:
+        #     rew -= 0.04 / min(dist2) ** 2
         if dist < agent.size + world.check[0].size:
             # 完成任务的奖励
             rew += 12
